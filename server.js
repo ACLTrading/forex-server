@@ -9,7 +9,6 @@ const port = process.env.PORT || 10000; // Render.com uses port 10000
 const SHARED_SECRET_KEY = "Armstrong_1980-()@"; // Must match MT4
 
 // --- IN-MEMORY DATA STORE ---
-// This is where we'll keep the latest signals.
 let signalsData = {
     "EURUSD": { "score": 0, "price": 1.0850 },
     "GBPUSD": { "score": 0, "price": 1.2720 },
@@ -23,15 +22,10 @@ let signalsData = {
 
 // --- MIDDLEWARE ---
 app.use(cors()); // Allow browser requests from any origin
-
-// ** CRASH FIX **
-// We accept raw text from MT4 first, *then* parse it safely.
-// This prevents the 'Unexpected non-whitespace' JSON parser crash.
-app.use(bodyParser.text({ type: '*/*' })); 
+app.use(bodyParser.text({ type: '*/*' })); // Accept raw text
 
 
 // --- AUTHENTICATION MIDDLEWARE ---
-// Simple key-based auth for our MT4 EA
 const checkApiKey = (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
     if (apiKey && apiKey === SHARED_SECRET_KEY) {
@@ -45,18 +39,24 @@ const checkApiKey = (req, res, next) => {
 // --- API ENDPOINTS ---
 
 // [ENDPOINT 1: FOR MT4]
-// MT4 will POST data to this endpoint.
 app.post('/update_signals', checkApiKey, (req, res) => {
     let incomingData;
+    let rawBody = req.body;
     
-    // Safely parse the text body
     try {
-        // req.body is now a string, we parse it manually.
-        incomingData = JSON.parse(req.body); 
+        // ** THIS IS THE REAL FIX **
+        // MT4 sends the 4096-byte array, including 3500+ null chars ('\0').
+        // We find the *first* null char and take everything *before* it.
+        // This gives us the clean, pure JSON string.
+        const cleanedBody = rawBody.split('\0')[0];
+        
+        // Now, parse the *clean* string.
+        incomingData = JSON.parse(cleanedBody); 
         console.log("Received data from MT4:", incomingData);
+
     } catch (error) {
         console.error("Failed to parse JSON from MT4:", error);
-        console.error("Raw data received:", req.body);
+        console.error("Raw data received (first 1000 chars):", rawBody.substring(0, 1000));
         return res.status(400).send({ error: 'Bad JSON format' });
     }
     
@@ -71,7 +71,6 @@ app.post('/update_signals', checkApiKey, (req, res) => {
 });
 
 // [ENDPOINT 2: FOR OUR WEBPAGE]
-// Our dashboard will GET data from this endpoint.
 app.get('/get_signals', (req, res) => {
     console.log("Serving data to webpage.");
     res.status(200).json(signalsData);
