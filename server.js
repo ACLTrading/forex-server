@@ -22,7 +22,8 @@ let signalsData = {
 
 // --- MIDDLEWARE ---
 app.use(cors()); // Allow browser requests from any origin
-app.use(bodyParser.text({ type: '*/*' })); // Accept raw text
+// Accept raw text, not JSON, because MT4 sends "junk" data
+app.use(bodyParser.text({ type: '*/*', limit: '5mb' })); // Increased limit just in case
 
 
 // --- AUTHENTICATION MIDDLEWARE ---
