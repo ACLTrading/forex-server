@@ -3,15 +3,13 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 10000; // Render.com uses port 10000
 
 // --- CONFIGURATION ---
 const SHARED_SECRET_KEY = "Armstrong_1980-()@"; // Must match MT4
 
 // --- IN-MEMORY DATA STORE ---
 // This is where we'll keep the latest signals.
-// It's a simple variable, so it will reset if the server restarts.
-// For a production app, you'd use a database (like Redis or Firestore).
 let signalsData = {
     "EURUSD": { "score": 0, "price": 1.0850 },
     "GBPUSD": { "score": 0, "price": 1.2720 },
@@ -25,7 +23,12 @@ let signalsData = {
 
 // --- MIDDLEWARE ---
 app.use(cors()); // Allow browser requests from any origin
-app.use(bodyParser.json()); // Parse JSON bodies
+
+// ** CRASH FIX **
+// We accept raw text from MT4 first, *then* parse it safely.
+// This prevents the 'Unexpected non-whitespace' JSON parser crash.
+app.use(bodyParser.text({ type: '*/*' })); 
+
 
 // --- AUTHENTICATION MIDDLEWARE ---
 // Simple key-based auth for our MT4 EA
@@ -44,8 +47,18 @@ const checkApiKey = (req, res, next) => {
 // [ENDPOINT 1: FOR MT4]
 // MT4 will POST data to this endpoint.
 app.post('/update_signals', checkApiKey, (req, res) => {
-    console.log("Received data from MT4:", req.body);
-    const incomingData = req.body;
+    let incomingData;
+    
+    // Safely parse the text body
+    try {
+        // req.body is now a string, we parse it manually.
+        incomingData = JSON.parse(req.body); 
+        console.log("Received data from MT4:", incomingData);
+    } catch (error) {
+        console.error("Failed to parse JSON from MT4:", error);
+        console.error("Raw data received:", req.body);
+        return res.status(400).send({ error: 'Bad JSON format' });
+    }
     
     // Update our in-memory store
     for (const symbol in incomingData) {
@@ -68,4 +81,3 @@ app.get('/get_signals', (req, res) => {
 app.listen(port, () => {
     console.log(`Signal server listening on port ${port}`);
 });
-
