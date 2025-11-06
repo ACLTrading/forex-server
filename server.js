@@ -6,7 +6,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // --- CONFIGURATION ---
-const SHARED_SECRET_KEY = "YOUR_VERY_SECRET_KEY_HERE"; // Must match MT4
+const SHARED_SECRET_KEY = "Armstrong_1980-()@"; // Must match MT4
 
 // --- IN-MEMORY DATA STORE ---
 // This is where we'll keep the latest signals.
@@ -68,3 +68,4 @@ app.get('/get_signals', (req, res) => {
 app.listen(port, () => {
     console.log(`Signal server listening on port ${port}`);
 });
+
