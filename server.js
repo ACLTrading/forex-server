@@ -1,83 +1,157 @@
-const express = require('express');
-const cors = require('cors');
-const bodyParser = require('body-parser');
+//+------------------------------------------------------------------+
+//|                 QuantumConfluenceScanner.mq4                     |
+//|               Sends strategy scores to a web server.             |
+//+------------------------------------------------------------------+
+#property copyright "Your Name"
+#property link      "https://www.smart-trade-alerts.com"
+#property version   "1.00"
+#property strict
 
-const app = express();
-const port = process.env.PORT || 10000; // Render.com uses port 10000
+// --- User Settings ---
+// IMPORTANT: Update this to your server's POST endpoint
+string serverPostUrl = "https://www.smart-trade-alerts.com/update_signals"; 
 
-// --- CONFIGURATION ---
-const SHARED_SECRET_KEY = "Armstrong_1980-()@"; // Must match MT4
+// IMPORTANT: This MUST match the secret key on your server
+string sharedSecretKey = "Armstrong_1980-()@"; 
 
-// --- IN-MEMORY DATA STORE ---
-let signalsData = {
-    "EURUSD": { "score": 0, "price": 1.0850 },
-    "GBPUSD": { "score": 0, "price": 1.2720 },
-    "USDJPY": { "score": 0, "price": 154.80 },
-    "AUDUSD": { "score": 0, "price": 0.6610 },
-    "USDCAD": { "score": 0, "price": 1.3650 },
-    "USDCHF": { "score": 0, "price": 0.9110 },
-    "NZDUSD": { "score": 0, "price": 0.6130 },
-    "EURJPY": { "score": 0, "price": 168.00 }
-};
+// List of symbols to scan
+string symbolsToScan[] = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD", "EURJPY"};
+int totalSymbols = 8;
 
-// --- MIDDLEWARE ---
-app.use(cors()); // Allow browser requests from any origin
-// Accept raw text, not JSON, because MT4 sends "junk" data
-app.use(bodyParser.text({ type: '*/*', limit: '5mb' })); // Increased limit just in case
+// --- Timer Setup ---
+int timerIntervalSeconds = 900; // 900 seconds = 15 minutes
 
-
-// --- AUTHENTICATION MIDDLEWARE ---
-const checkApiKey = (req, res, next) => {
-    const apiKey = req.headers['x-api-key'];
-    if (apiKey && apiKey === SHARED_SECRET_KEY) {
-        next(); // Key is valid, proceed
-    } else {
-        console.warn("Unauthorized POST attempt received.");
-        res.status(401).send({ error: 'Unauthorized' });
-    }
-};
-
-// --- API ENDPOINTS ---
-
-// [ENDPOINT 1: FOR MT4]
-app.post('/update_signals', checkApiKey, (req, res) => {
-    let incomingData;
-    let rawBody = req.body;
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+    // Set the timer to run every 15 minutes
+    EventSetTimer(timerIntervalSeconds);
     
-    try {
-        // ** THIS IS THE REAL FIX **
-        // MT4 sends the 4096-byte array, including 3500+ null chars ('\0').
-        // We find the *first* null char and take everything *before* it.
-        // This gives us the clean, pure JSON string.
-        const cleanedBody = rawBody.split('\0')[0];
+    // Run the first scan immediately on load
+    OnTimer(); 
+    return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+    // Stop the timer
+    EventKillTimer();
+}
+
+//+------------------------------------------------------------------+
+//| Timer event function (this is our main loop)                     |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+    Print("QuantumConfluenceScanner: Running scan...");
+    
+    // 1. Build the JSON payload string
+    string jsonPayload = "{";
+    
+    for(int i = 0; i < totalSymbols; i++)
+    {
+        string symbol = symbolsToScan[i];
         
-        // Now, parse the *clean* string.
-        incomingData = JSON.parse(cleanedBody); 
-        console.log("Received data from MT4:", incomingData);
-
-    } catch (error) {
-        console.error("Failed to parse JSON from MT4:", error);
-        console.error("Raw data received (first 1000 chars):", rawBody.substring(0, 1000));
-        return res.status(400).send({ error: 'Bad JSON format' });
-    }
-    
-    // Update our in-memory store
-    for (const symbol in incomingData) {
-        if (signalsData.hasOwnProperty(symbol)) {
-            signalsData[symbol] = incomingData[symbol];
+        // MQL4/5 symbol names (e.g., EURUSD) don't have '/'.
+        // Our dashboard expects "EUR/USD". We'll use the MQL4 name as the key.
+        
+        int score = calculateConfluenceScore(symbol);
+        double price = SymbolInfoDouble(symbol, SYMBOL_BID);
+        
+        jsonPayload += "\"" + symbol + "\": {"; // e.g., "EURUSD": {
+        jsonPayload += "\"score\": " + (string)score + ","; // "score": 3,
+        jsonPayload += "\"price\": " + DoubleToString(price, 5) + ""; // "price": 1.08500
+        jsonPayload += "}";
+        
+        if(i < totalSymbols - 1)
+        {
+            jsonPayload += ","; // Add comma for next entry
         }
     }
     
-    res.status(200).send({ message: 'Data received successfully' });
-});
+    jsonPayload += "}"; // Close the JSON
+    
+    Print("JSON Payload: ", jsonPayload);
+    
+    // 2. Send the data to the server
+    sendDataToServer(jsonPayload);
+}
 
-// [ENDPOINT 2: FOR OUR WEBPAGE]
-app.get('/get_signals', (req, res) => {
-    console.log("Serving data to webpage.");
-    res.status(200).json(signalsData);
-});
+//+------------------------------------------------------------------+
+//| Calculates the Confluence Score for a symbol                     |
+//+------------------------------------------------------------------+
+int calculateConfluenceScore(string symbol)
+{
+    // Ensure market data is available
+    RefreshRates();
 
-// --- START THE SERVER ---
-app.listen(port, () => {
-    console.log(`Signal server listening on port ${port}`);
-});
+    // --- 1. Macro Trend (H4) ---
+    double priceH4 = iClose(symbol, PERIOD_H4, 1);
+    double sma100_H4 = iMA(symbol, PERIOD_H4, 100, 0, MODE_SMA, PRICE_CLOSE, 1);
+    int h4Trend = (priceH4 > sma100_H4) ? 1 : -1;
+
+    // --- 2. Market Structure (H1) ---
+    double priceH1 = iClose(symbol, PERIOD_H1, 1);
+    double ema50_H1 = iMA(symbol, PERIOD_H1, 50, 0, MODE_EMA, PRICE_CLOSE, 1);
+    int h1Momentum = (priceH1 > ema50_H1) ? 1 : -1;
+
+    // --- 3. Entry Trigger (M15) ---
+    // Get stochastic value from the *most recently closed* bar
+    double stochMain = iStochastic(symbol, PERIOD_M15, 14, 3, 3, MODE_SMA, 0, MODE_MAIN, 1);
+    int m15Stoch = 0; // Neutral default
+    if (stochMain < 20) m15Stoch = 1;  // Oversold
+    if (stochMain > 80) m15Stoch = -1; // Overbought
+
+    // --- Calculate Final Score ---
+    // Strong Buy
+    if (h4Trend == 1 && h1Momentum == 1 && m15Stoch == 1)
+    {
+        return 3;
+    }
+    // Strong Sell
+    if (h4Trend == -1 && h1Momentum == -1 && m15Stoch == -1)
+    {
+        return -3;
+    }
+    
+    // Otherwise, return the simple sum
+    return h4Trend + h1Momentum + m15Stoch;
+}
+
+
+//+------------------------------------------------------------------+
+//| Sends the JSON data to the web server                            |
+//+------------------------------------------------------------------+
+void sendDataToServer(string jsonData)
+{
+    string headers = "Content-Type: application/json\r\n" +
+                     "X-API-Key: " + sharedSecretKey + "\r\n"; // Our secret key header
+                     
+    char postData[];
+    char result[];
+    string resultHeaders; // <-- ADD THIS LINE to store response headers
+    
+    // Convert string to char array for WebRequest
+    int dataSize = StringToCharArray(jsonData, postData);
+    
+    int timeout = 5000; // 5 seconds
+    
+    // Reset last error
+    ResetLastError();
+    
+    int res = WebRequest("POST", serverPostUrl, headers, timeout, postData, result, resultHeaders);
+    
+    if(res == -1)
+    {
+        Print("WebRequest Error: ", GetLastError());
+    }
+    else
+    {
+        Print("Server Response: ", CharArrayToString(result));
+    }
+}
